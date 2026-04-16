@@ -1,0 +1,2 @@
+from .pipeline_cogvideox_fun import CogVideoXFunPipeline
+from .pipeline_cogvideox_fun_inpaint import CogVideoXFunInpaintPipeline

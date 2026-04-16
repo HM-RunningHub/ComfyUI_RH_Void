@@ -1,0 +1,579 @@
+{
+  "id": "6316128a-3be2-490b-a4ba-06e8d67e1b3b",
+  "revision": 0,
+  "last_node_id": 7,
+  "last_link_id": 8,
+  "nodes": [
+    {
+      "id": 4,
+      "type": "RunningHub Void Pass Sampler",
+      "pos": [
+        992.880859375,
+        479.384765625
+      ],
+      "size": [
+        400,
+        296
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "pipeline",
+          "name": "pipeline",
+          "type": "RH_Void_PIPELINE",
+          "link": 2
+        },
+        {
+          "label": "source",
+          "name": "source",
+          "type": "VIDEO",
+          "link": 7
+        },
+        {
+          "label": "quadmask",
+          "name": "quadmask",
+          "type": "VIDEO",
+          "link": 4
+        },
+        {
+          "label": "prompt",
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          }
+        },
+        {
+          "label": "width",
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          }
+        },
+        {
+          "label": "height",
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          }
+        },
+        {
+          "label": "steps",
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          }
+        },
+        {
+          "label": "num_frames",
+          "name": "num_frames",
+          "type": "INT",
+          "widget": {
+            "name": "num_frames"
+          }
+        },
+        {
+          "label": "fps",
+          "name": "fps",
+          "type": "INT",
+          "widget": {
+            "name": "fps"
+          }
+        },
+        {
+          "label": "seed",
+          "name": "seed",
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "video",
+          "name": "video",
+          "type": "VIDEO",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RunningHub Void Pass Sampler",
+        "widget_ue_connectable": {}
+      },
+      "widgets_values": [
+        "A video of a rubber ducky.",
+        672,
+        384,
+        30,
+        85,
+        12,
+        166342919806692,
+        "randomize"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "RunningHub Void Pass Loader",
+      "pos": [
+        343.2536315917969,
+        -295.48931884765625
+      ],
+      "size": [
+        231.36776733398438,
+        26
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "label": "pipeline",
+          "name": "pipeline",
+          "type": "RH_Void_PIPELINE",
+          "links": [
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RunningHub Void Pass Loader",
+        "widget_ue_connectable": {}
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 7,
+      "type": "SaveVideo",
+      "pos": [
+        1508.9884033203125,
+        265.4538269042969
+      ],
+      "size": [
+        527.198486328125,
+        449.25628662109375
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "video",
+          "name": "video",
+          "type": "VIDEO",
+          "link": 8
+        },
+        {
+          "label": "filename_prefix",
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          }
+        },
+        {
+          "label": "format",
+          "name": "format",
+          "type": "COMBO",
+          "widget": {
+            "name": "format"
+          }
+        },
+        {
+          "label": "codec",
+          "name": "codec",
+          "type": "COMBO",
+          "widget": {
+            "name": "codec"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "video_url",
+          "name": "video_url",
+          "type": "STRING"
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveVideo",
+        "widget_ue_connectable": {}
+      },
+      "widgets_values": [
+        "video/ComfyUI",
+        "auto",
+        "auto"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "PreviewImage",
+      "pos": [
+        908.4922485351562,
+        -268.5580139160156
+      ],
+      "size": [
+        426.751953125,
+        258
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "images",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "label": "image_urls",
+          "name": "image_urls",
+          "type": "STRING"
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewImage",
+        "widget_ue_connectable": {}
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 5,
+      "type": "SaveVideo",
+      "pos": [
+        1509.0267333984375,
+        -282.2763977050781
+      ],
+      "size": [
+        520.1261596679688,
+        436.958984375
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "video",
+          "name": "video",
+          "type": "VIDEO",
+          "link": 5
+        },
+        {
+          "label": "filename_prefix",
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          }
+        },
+        {
+          "label": "format",
+          "name": "format",
+          "type": "COMBO",
+          "widget": {
+            "name": "format"
+          }
+        },
+        {
+          "label": "codec",
+          "name": "codec",
+          "type": "COMBO",
+          "widget": {
+            "name": "codec"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "video_url",
+          "name": "video_url",
+          "type": "STRING"
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveVideo",
+        "widget_ue_connectable": {}
+      },
+      "widgets_values": [
+        "video/ComfyUI",
+        "auto",
+        "auto"
+      ]
+    },
+    {
+      "id": 1,
+      "type": "RunningHub Void Point Editor",
+      "pos": [
+        312.63958740234375,
+        181.5996551513672
+      ],
+      "size": [
+        400,
+        522
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "preview_stride",
+          "name": "preview_stride",
+          "type": "INT",
+          "widget": {
+            "name": "preview_stride"
+          }
+        },
+        {
+          "label": "upload",
+          "name": "upload",
+          "type": "STRING",
+          "widget": {
+            "name": "upload"
+          }
+        },
+        {
+          "label": "upload_status",
+          "name": "upload_status",
+          "type": "STRING",
+          "widget": {
+            "name": "upload_status"
+          }
+        },
+        {
+          "label": "points_store",
+          "name": "points_store",
+          "type": "STRING",
+          "widget": {
+            "name": "points_store"
+          }
+        },
+        {
+          "label": "coordinates",
+          "name": "coordinates",
+          "type": "STRING",
+          "widget": {
+            "name": "coordinates"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "video",
+          "name": "video",
+          "type": "VIDEO",
+          "links": [
+            3,
+            7
+          ]
+        },
+        {
+          "label": "primary_points_by_frame",
+          "name": "primary_points_by_frame",
+          "type": "RHVoidPoints",
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RunningHub Void Point Editor",
+        "widget_ue_connectable": {}
+      },
+      "widgets_values": [
+        4,
+        "07acee2c2d67a7ac912aa044aeff5af6edf68189681b5cd7c0ab9969e697d171.mp4",
+        "success",
+        "{\"8\":[[257,15],[423,14],[724,15],[936,20]],\"40\":[[295,11],[364,105],[425,253],[278,411],[605,424],[939,414],[766,252],[870,58]],\"60\":[[386,23],[286,148],[382,277],[423,425],[284,579],[641,611],[929,589],[769,422],[872,250],[871,48]]}",
+        "{\"8\":[[257,15],[423,14],[724,15],[936,20]],\"40\":[[295,11],[364,105],[425,253],[278,411],[605,424],[939,414],[766,252],[870,58]],\"60\":[[386,23],[286,148],[382,277],[423,425],[284,579],[641,611],[929,589],[769,422],[872,250],[871,48]]}",
+        ""
+      ]
+    },
+    {
+      "id": 2,
+      "type": "RunningHub Void Mask Reasoner",
+      "pos": [
+        981.630859375,
+        148.759765625
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "video",
+          "name": "video",
+          "type": "VIDEO",
+          "link": 3
+        },
+        {
+          "label": "primary_points_by_frame",
+          "name": "primary_points_by_frame",
+          "type": "RHVoidPoints",
+          "link": 1
+        },
+        {
+          "label": "prompt",
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          }
+        },
+        {
+          "label": "analysis_model",
+          "name": "analysis_model",
+          "type": "COMBO",
+          "widget": {
+            "name": "analysis_model"
+          }
+        },
+        {
+          "label": "api_key",
+          "name": "api_key",
+          "type": "STRING",
+          "widget": {
+            "name": "api_key"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "label": "quadmask",
+          "name": "quadmask",
+          "type": "VIDEO",
+          "links": [
+            4,
+            5
+          ]
+        },
+        {
+          "label": "debug_image(with mask)",
+          "name": "debug_image(with mask)",
+          "type": "IMAGE",
+          "links": [
+            6
+          ]
+        },
+        {
+          "label": "debug_image(with grid)",
+          "name": "debug_image(with grid)",
+          "type": "IMAGE"
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RunningHub Void Mask Reasoner",
+        "widget_ue_connectable": {}
+      },
+      "widgets_values": [
+        "remove the press",
+        "gemini-3-flash-preview",
+        ""
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      1,
+      2,
+      1,
+      "RHVoidPoints"
+    ],
+    [
+      2,
+      3,
+      0,
+      4,
+      0,
+      "RH_Void_PIPELINE"
+    ],
+    [
+      3,
+      1,
+      0,
+      2,
+      0,
+      "VIDEO"
+    ],
+    [
+      4,
+      2,
+      0,
+      4,
+      2,
+      "VIDEO"
+    ],
+    [
+      5,
+      2,
+      0,
+      5,
+      0,
+      "VIDEO"
+    ],
+    [
+      6,
+      2,
+      1,
+      6,
+      0,
+      "IMAGE"
+    ],
+    [
+      7,
+      1,
+      0,
+      4,
+      1,
+      "VIDEO"
+    ],
+    [
+      8,
+      4,
+      0,
+      7,
+      0,
+      "VIDEO"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "links_added_by_ue": [],
+    "ue_links": [],
+    "0246.VERSION": [
+      0,
+      0,
+      4
+    ],
+    "ds": {
+      "scale": 0.7247295000000005,
+      "offset": [
+        -78.81170930311748,
+        482.761674689402
+      ]
+    },
+    "frontendVersion": "1.23.0",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}
