@@ -85,6 +85,15 @@ def load_pipeline(model_path, transformer_path):
         subfolder="vae",
     ).to(weight_dtype)
 
+    # Tiling + slicing keep VAE encode/decode peak GPU memory low. Without
+    # them, encoding/decoding a full T×H×W video produces one giant 3D-conv
+    # activation (~24 GB on 720p clips). Tiling splits the spatial (H, W)
+    # plane into overlapping tiles; slicing processes the batch dim one
+    # sample at a time. Both are in-library features of
+    # AutoencoderKLCogVideoX and are stitched back together internally.
+    vae.enable_tiling()
+    vae.enable_slicing()
+
     # Get tokenizer and text_encoder
     tokenizer = T5Tokenizer.from_pretrained(
         model_name, subfolder="tokenizer"

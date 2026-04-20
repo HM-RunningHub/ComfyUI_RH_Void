@@ -48,6 +48,30 @@
 
 - 每帧采用纯并集（移除了原先的跨帧 cumulative union），与 VOID 论文 `convert_trimask_to_quadmask` 的 GT 定义一致。
 
+**2026-04-20 更新2：降低显存占用，支持 24G 显卡生成 720p 视频**
+
+- 在 **24G 显存**（如 RTX 3090 / 4090）机器上可直接生成 **720p（1088×720）** 视频。
+- **默认生成尺寸调整为 480p（720×480）**，以更好兼容主流消费级显卡；需要 720p 的用户可在 `RunningHub_Void_PassSampler` 节点上将 `width`、`height` 改为 `1088`、`720`。
+
+### 效果对比
+
+<table>
+  <tr>
+    <td align="center"><b>原视频</b></td>
+    <td align="center"><b>VOID 修复结果</b></td>
+  </tr>
+  <tr>
+    <td>
+      <video src="example/src_person.mp4" controls muted loop playsinline width="480"></video>
+    </td>
+    <td>
+      <video src="example/dist_person_1080.mp4" controls muted loop playsinline width="480"></video>
+    </td>
+  </tr>
+</table>
+
+> GitHub README 在部分浏览器中无法直接播放仓库相对路径的 `.mp4` 文件；本地 clone 后或 VSCode 预览可正常播放。如需在线预览，请参见 `example/src_person.mp4`、`example/dist_person_1080.mp4`。
+
 ---
 
 ## 🤖 Models
