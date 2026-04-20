@@ -62,15 +62,13 @@
   </tr>
   <tr>
     <td>
-      <video src="example/src_person.mp4" controls muted loop playsinline width="480"></video>
+      <video src="https://github.com/user-attachments/assets/42010732-a956-45f8-827c-8bdcf434eedf" width="100%" controls muted loop playsinline></video>
     </td>
     <td>
-      <video src="example/dist_person_1080.mp4" controls muted loop playsinline width="480"></video>
+      <video src="https://github.com/user-attachments/assets/f12bbd2e-efef-4681-bced-e1a739c93d07" width="100%" controls muted loop playsinline></video>
     </td>
   </tr>
 </table>
-
-> GitHub README 在部分浏览器中无法直接播放仓库相对路径的 `.mp4` 文件；本地 clone 后或 VSCode 预览可正常播放。如需在线预览，请参见 `example/src_person.mp4`、`example/dist_person_1080.mp4`。
 
 ---
 
