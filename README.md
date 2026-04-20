@@ -34,6 +34,22 @@
 
 ---
 
+## 📢 更新说明
+
+**2026-04-20 更新：基于原论文，重新实现 quadmask 算法**
+
+- **Prompt 新增 `SPECIAL CASE - Object Already Moving, Deflected/Obstructed By Primary`**：当一个物体本身已在运动、却被 primary 遮挡/偏转/阻挡/减速时，要求 VLM 输出反事实轨迹（即 primary 不存在时该物体本应继续运动到的位置），并通过 `deflected_by_primary: true` 标记该分支。
+- **按 VLM 分类对 `affected_objects` 使用不同分支绘制灰色区域（Mcount）**：
+
+  - `category = visual_artifact`
+  - `category = physical` 且 `should_have_stayed = true`
+  - `category = physical` 且 `will_move = true` + `trajectory_path`
+  - 其他（默认）
+
+- 每帧采用纯并集（移除了原先的跨帧 cumulative union），与 VOID 论文 `convert_trimask_to_quadmask` 的 GT 定义一致。
+
+---
+
 ## 🤖 Models
 
 当前这个 ComfyUI 插件工作流会使用以下模型和资源：

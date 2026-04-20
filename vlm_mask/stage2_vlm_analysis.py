@@ -28,8 +28,8 @@ from PIL import Image, ImageDraw
 
 import openai
 
-DEFAULT_MODEL = "gemini-3-flash-preview"
-# DEFAULT_MODEL = 'gemini-3-pro-preview'
+# DEFAULT_MODEL = "gemini-3-flash-preview"
+DEFAULT_MODEL = 'gemini-3-pro-preview'
 
 
 def _print_api_exception(prefix: str, exc: Exception):
@@ -439,6 +439,47 @@ B) PHYSICAL OBJECTS (may move, fall, or stay):
      "why": "ball was stationary until club hit it"
    }}
 
+   **SPECIAL CASE - Object Already Moving, Deflected/Obstructed By Primary:**
+   If another object was ALREADY IN MOTION and the primary object BLOCKS,
+   DEFLECTS, SLOWS, or REDIRECTS its motion (e.g. a rolling ball hits the
+   primary and bounces off, a moving object is stopped by primary):
+   - Without the primary, the object would CONTINUE its ORIGINAL motion
+     (not stop, not reset to a start position — keep moving on its
+     counterfactual path).
+   - You MUST treat this as WILL_MOVE = TRUE and provide a counterfactual
+     trajectory_path describing where the object WOULD be at each keyframe
+     if the primary were never there.
+   - Set "deflected_by_primary": true so downstream code knows this is the
+     counterfactual-continuation case (not the "should have stayed" case).
+   - The trajectory should cover frames from first_appears_frame through
+     the LAST frame shown in the grid reference samples. If the object
+     would leave the visible area, extrapolate the straight-line motion to
+     an edge cell (this is fine — the cell may be at the image boundary).
+
+   Examples:
+   - Rolling ball hits a toy on a table → Without the toy, ball would
+     continue in a straight line across the table.
+   - Thrown ball blocked by a wall → Without the wall, ball would keep
+     flying on its original arc.
+   - Car bumps into obstacle → Without the obstacle, car would keep driving
+     forward.
+
+   Format:
+   {{
+     "noun": "rolling ball",
+     "category": "physical",
+     "will_move": true,
+     "deflected_by_primary": true,
+     "object_size_grids": {{"rows": 1, "cols": 1}},
+     "trajectory_path": [
+       {{"frame": 0,  "grid_row": 3, "grid_col": 3}},   ← original position
+       {{"frame": 20, "grid_row": 3, "grid_col": 7}},   ← would have reached here
+       {{"frame": 40, "grid_row": 3, "grid_col": 11}},  ← keep going straight
+       {{"frame": 61, "grid_row": 3, "grid_col": 13}}   ← at/near image edge
+     ],
+     "why": "ball was rolling; primary deflected it. Without primary it would keep rolling straight."
+   }}
+
    For each physical object, determine:
    - **will_move**: true ONLY if object will fall/move when support removed
    - **first_appears_frame**: frame number object first appears (0 if from start)
@@ -631,6 +672,12 @@ CRITICAL REMINDERS:
 • For visual artifacts (shadow, reflection): will_move=false (no trajectory needed)
 • For held objects (guitar, cup): will_move=true (MUST provide object_size_grids + trajectory_path)
 • For objects on surfaces being acted on (can being crushed, can being opened): will_move=false
+• DEFLECTED / OBSTRUCTED objects (already-moving object hits primary and gets
+  bounced / blocked / slowed): will_move=TRUE, deflected_by_primary=TRUE, and
+  you MUST provide a counterfactual trajectory_path showing where the object
+  WOULD have continued moving without the primary (not its real deflected path).
+  Extend the trajectory to the last frame in the grid reference samples; clamp
+  to an edge cell if it would leave the visible area.
 • Grid trajectory: Add +1 cell padding to object size (over-mask is better than under-mask)
 • Grid trajectory: Use the yellow grid overlay to determine (row, col) positions
 • Be conservative - when in doubt, DON'T include
@@ -740,6 +787,12 @@ def parse_vlm_response(raw: str) -> Dict:
                 "col": int(orig_grid.get("col", 0))
             }
 
+        # Parse Case 5: already moving, deflected / obstructed by primary.
+        # Only the flag is surfaced; its trajectory_path comes through the
+        # regular will_move=true parse branch below.
+        if "deflected_by_primary" in item:
+            obj["deflected_by_primary"] = bool(item.get("deflected_by_primary", False))
+
         # Parse grid localizations for visual artifacts
         if "grid_localizations" in item:
             grid_locs = []
@@ -758,14 +811,18 @@ def parse_vlm_response(raw: str) -> Dict:
             if grid_locs:
                 obj["grid_localizations"] = grid_locs
 
-        # Parse grid trajectory if will_move=true
-        if obj["will_move"] and "object_size_grids" in item and "trajectory_path" in item:
-            size_grids = item.get("object_size_grids", {})
+        # object_size_grids is useful for BOTH trajectory_path (will_move=true)
+        # AND stationary reconstruction (should_have_stayed=true), so parse it
+        # independently of trajectory_path.
+        if "object_size_grids" in item:
+            size_grids = item.get("object_size_grids", {}) or {}
             obj["object_size_grids"] = {
                 "rows": int(size_grids.get("rows", 2)),
                 "cols": int(size_grids.get("cols", 2))
             }
 
+        # Parse grid trajectory if will_move=true
+        if obj["will_move"] and "trajectory_path" in item:
             trajectory = []
             for point in item.get("trajectory_path", []):
                 trajectory.append({

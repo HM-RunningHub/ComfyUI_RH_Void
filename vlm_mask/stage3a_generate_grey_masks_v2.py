@@ -472,6 +472,324 @@ def filter_masks_by_proximity_per_frame(
     return filtered
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Paper-faithful builders: one per VLM decision branch.
+# All return List[np.ndarray] of shape (H, W), length == total_frames.
+# ──────────────────────────────────────────────────────────────────────────
+
+def grid_cell_to_pixel_bbox(
+    row: int,
+    col: int,
+    frame_shape: Tuple[int, int],
+    grid_rows: int,
+    grid_cols: int,
+) -> Tuple[int, int, int, int]:
+    """Convert a (row, col) grid cell to an (x1, y1, x2, y2) pixel bbox."""
+    h, w = frame_shape
+    cell_h = h / grid_rows
+    cell_w = w / grid_cols
+    y1 = int(round(row * cell_h))
+    y2 = int(round((row + 1) * cell_h))
+    x1 = int(round(col * cell_w))
+    x2 = int(round((col + 1) * cell_w))
+    y1 = max(0, min(h, y1))
+    y2 = max(0, min(h, y2))
+    x1 = max(0, min(w, x1))
+    x2 = max(0, min(w, x2))
+    return x1, y1, x2, y2
+
+
+def paint_grid_cells_on_mask(
+    mask: np.ndarray,
+    cells: List[Tuple[int, int]],
+    grid_rows: int,
+    grid_cols: int,
+    clamp: bool = False,
+) -> None:
+    """In-place paint a list of (row, col) cells onto a boolean mask.
+
+    clamp=True: out-of-range cells are snapped to the nearest edge cell,
+    useful when extrapolating a trajectory past its last keyframe so the
+    object "parks" at the image edge rather than vanishing.
+    """
+    h, w = mask.shape
+    for r, c in cells:
+        if clamp:
+            r = max(0, min(grid_rows - 1, r))
+            c = max(0, min(grid_cols - 1, c))
+        else:
+            if r < 0 or r >= grid_rows or c < 0 or c >= grid_cols:
+                continue
+        x1, y1, x2, y2 = grid_cell_to_pixel_bbox(r, c, (h, w), grid_rows, grid_cols)
+        if x2 > x1 and y2 > y1:
+            mask[y1:y2, x1:x2] = True
+
+
+def _interp_trajectory_grid_at_frame(
+    keyframes: List[Tuple[int, float, float]],
+    frame_idx: int,
+    allow_extrapolate: bool = True,
+) -> Tuple[float, float]:
+    """Piecewise-linear interpolation of (row, col) at `frame_idx`.
+
+    keyframes: sorted list of (frame, grid_row, grid_col).
+    Before the first keyframe → clamp to first.
+    After the last keyframe  → linear extrapolation using last-segment velocity
+    (if allow_extrapolate), else clamp to last.
+    """
+    if not keyframes:
+        return 0.0, 0.0
+    if frame_idx <= keyframes[0][0]:
+        return keyframes[0][1], keyframes[0][2]
+    if frame_idx >= keyframes[-1][0]:
+        if not allow_extrapolate or len(keyframes) < 2:
+            return keyframes[-1][1], keyframes[-1][2]
+        f_prev, r_prev, c_prev = keyframes[-2]
+        f_last, r_last, c_last = keyframes[-1]
+        df = max(1, f_last - f_prev)
+        vr = (r_last - r_prev) / df
+        vc = (c_last - c_prev) / df
+        dt = frame_idx - f_last
+        return r_last + vr * dt, c_last + vc * dt
+    for i in range(len(keyframes) - 1):
+        f0, r0, c0 = keyframes[i]
+        f1, r1, c1 = keyframes[i + 1]
+        if f0 <= frame_idx <= f1:
+            t = 0.0 if f1 == f0 else (frame_idx - f0) / (f1 - f0)
+            return r0 + (r1 - r0) * t, c0 + (c1 - c0) * t
+    return keyframes[-1][1], keyframes[-1][2]
+
+
+def paint_stationary_grid_box_per_frame(
+    center_grid: Tuple[int, int],
+    object_size_grids: Tuple[int, int],
+    total_frames: int,
+    frame_shape: Tuple[int, int],
+    grid_rows: int,
+    grid_cols: int,
+    first_appears_frame: int = 0,
+) -> List[np.ndarray]:
+    """Mcount for should_have_stayed=true objects when we only have a grid
+    box (no SAM3 snapshot). Paints a fixed rows×cols cell box centred at
+    original_position_grid, for every frame ≥ first_appears_frame.
+    """
+    h, w = frame_shape
+    masks = [np.zeros((h, w), dtype=bool) for _ in range(total_frames)]
+
+    r_center, c_center = center_grid
+    rows_cells = max(1, int(object_size_grids[0]))
+    cols_cells = max(1, int(object_size_grids[1]))
+    r_start = int(round(r_center - (rows_cells - 1) / 2.0))
+    c_start = int(round(c_center - (cols_cells - 1) / 2.0))
+    cells: List[Tuple[int, int]] = []
+    for dr in range(rows_cells):
+        for dc in range(cols_cells):
+            cells.append((r_start + dr, c_start + dc))
+
+    for frame_idx in range(first_appears_frame, total_frames):
+        paint_grid_cells_on_mask(masks[frame_idx], cells, grid_rows, grid_cols)
+
+    return masks
+
+
+def paint_vlm_grid_localizations_per_frame(
+    grid_localizations: List[Dict],
+    total_frames: int,
+    frame_shape: Tuple[int, int],
+    grid_rows: int,
+    grid_cols: int,
+    first_appears_frame: int = 0,
+) -> List[np.ndarray]:
+    """Mcount driven by VLM grid_localizations (typical: visual_artifact).
+
+    For frames between two VLM keyframes, we take the UNION of their cells
+    so the artifact's footprint evolves smoothly from one keyframe to the
+    next. Before the first keyframe → first keyframe's cells (if ≥
+    first_appears_frame). After the last keyframe → last keyframe's cells.
+    """
+    h, w = frame_shape
+    masks = [np.zeros((h, w), dtype=bool) for _ in range(total_frames)]
+
+    # Normalise to sorted (frame, List[(row, col)]).
+    entries: List[Tuple[int, List[Tuple[int, int]]]] = []
+    for loc in grid_localizations or []:
+        f = int(loc.get("frame", 0))
+        cells: List[Tuple[int, int]] = []
+        for region in loc.get("grid_regions", []) or []:
+            cells.append((int(region.get("row", 0)), int(region.get("col", 0))))
+        if cells:
+            entries.append((f, cells))
+    if not entries:
+        return masks
+    entries.sort(key=lambda x: x[0])
+
+    for frame_idx in range(total_frames):
+        if frame_idx < first_appears_frame:
+            continue
+        cells: List[Tuple[int, int]] = []
+        if frame_idx <= entries[0][0]:
+            cells = list(entries[0][1])
+        elif frame_idx >= entries[-1][0]:
+            cells = list(entries[-1][1])
+        else:
+            for i in range(len(entries) - 1):
+                fa, cells_a = entries[i]
+                fb, cells_b = entries[i + 1]
+                if fa <= frame_idx <= fb:
+                    cells = list({*cells_a, *cells_b})
+                    break
+        paint_grid_cells_on_mask(masks[frame_idx], cells, grid_rows, grid_cols)
+
+    return masks
+
+
+def paint_vlm_trajectory_box_per_frame(
+    trajectory_path: List[Dict],
+    object_size_grids: Tuple[int, int],
+    total_frames: int,
+    frame_shape: Tuple[int, int],
+    grid_rows: int,
+    grid_cols: int,
+    first_appears_frame: int = 0,
+) -> List[np.ndarray]:
+    """Mcount driven by VLM trajectory_path + object_size_grids.
+
+    A rows×cols grid-cell box is placed at the interpolated centre for each
+    frame ≥ first_appears_frame. After the last keyframe we extrapolate by
+    last-segment velocity and clamp to the image edge so Mcount keeps
+    covering the region the object would "park" against.
+    """
+    h, w = frame_shape
+    masks = [np.zeros((h, w), dtype=bool) for _ in range(total_frames)]
+
+    keyframes: List[Tuple[int, float, float]] = []
+    for kf in trajectory_path or []:
+        keyframes.append((
+            int(kf.get("frame", 0)),
+            float(kf.get("grid_row", 0)),
+            float(kf.get("grid_col", 0)),
+        ))
+    if not keyframes:
+        return masks
+    keyframes.sort(key=lambda x: x[0])
+    last_kf_frame = keyframes[-1][0]
+
+    rows_cells = max(1, int(object_size_grids[0]))
+    cols_cells = max(1, int(object_size_grids[1]))
+
+    for frame_idx in range(total_frames):
+        if frame_idx < first_appears_frame:
+            continue
+        r_center, c_center = _interp_trajectory_grid_at_frame(
+            keyframes, frame_idx, allow_extrapolate=True
+        )
+        r_start = int(round(r_center - (rows_cells - 1) / 2.0))
+        c_start = int(round(c_center - (cols_cells - 1) / 2.0))
+        cells: List[Tuple[int, int]] = []
+        for dr in range(rows_cells):
+            for dc in range(cols_cells):
+                cells.append((r_start + dr, c_start + dc))
+
+        # Inside the VLM-annotated range, drop out-of-range cells. Past the
+        # last keyframe, we're extrapolating by velocity — clamp to image
+        # boundary so the mask stays alive at the edge instead of vanishing.
+        clamp = frame_idx > last_kf_frame
+        paint_grid_cells_on_mask(masks[frame_idx], cells, grid_rows, grid_cols, clamp=clamp)
+
+    return masks
+
+
+def freeze_sam3_at_frame(
+    video_path: str,
+    frame_idx: int,
+    noun: str,
+    segmenter: SegmentationModel,
+    total_frames: int,
+    frame_shape: Tuple[int, int],
+) -> Tuple[List[np.ndarray], int]:
+    """One SAM3 snapshot at `frame_idx`, copied to every frame ≥ frame_idx.
+
+    Returns (masks, pixel_count_per_frame). If SAM3 misses, masks are empty
+    (caller can fall back to a grid box).
+    """
+    h, w = frame_shape
+    empty = [np.zeros((h, w), dtype=bool) for _ in range(total_frames)]
+
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_idx))
+        ret, frame = cap.read()
+        if not ret:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret, frame = cap.read()
+    finally:
+        cap.release()
+
+    if not ret:
+        return empty, 0
+
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    snapshot = segmenter.segment(Image.fromarray(frame_rgb), noun)
+    px = int(snapshot.sum())
+
+    out: List[np.ndarray] = []
+    empty_mask = np.zeros((h, w), dtype=bool)
+    for f in range(total_frames):
+        out.append(snapshot.copy() if f >= frame_idx else empty_mask.copy())
+    return out, px
+
+
+# Keywords that, when found in a visual_artifact noun, are reliably
+# segmentable by SAM3 (unlike generic "artifact" or "ripple").
+_SAM3_SEGMENTABLE_ARTIFACT_KEYWORDS = ("reflection", "shadow")
+
+
+def split_visual_artifact_noun(noun: str) -> List[str]:
+    """Split a visual_artifact noun into SAM3-friendly sub-nouns.
+
+    If `noun` contains any of the SAM3-segmentable keywords (reflection,
+    shadow), we return one sub-noun per keyword, preserving any qualifier
+    words that appear *before* the keyword list. For example:
+
+        "press reflection and shadow"  → ["press reflection", "press shadow"]
+        "reflection and shadow"        → ["reflection", "shadow"]
+        "yellow duck's reflection"     → ["yellow duck's reflection"]
+        "ripples on water"             → []   (no segmentable keyword)
+
+    Returns empty list when the noun has no segmentable keyword (caller
+    should fall back to the grid_localizations path).
+    """
+    if not noun:
+        return []
+    low = noun.lower()
+    keywords_found = [kw for kw in _SAM3_SEGMENTABLE_ARTIFACT_KEYWORDS if kw in low]
+    if not keywords_found:
+        return []
+
+    # Extract the prefix = everything before the FIRST segmentable keyword,
+    # with trailing "and"/"or"/"&"/"," stripped. That prefix becomes the
+    # qualifier we attach to each sub-noun so SAM3 has more grounding
+    # context ("press reflection" ≻ just "reflection").
+    first_kw_pos = min(low.find(kw) for kw in keywords_found)
+    prefix = noun[:first_kw_pos].strip()
+    # Drop connector tokens at the end of the prefix.
+    while True:
+        stripped = prefix
+        for tok in (",", "&", "and", "or"):
+            if stripped.lower().endswith(tok):
+                stripped = stripped[: -len(tok)].rstrip()
+        if stripped == prefix:
+            break
+        prefix = stripped
+
+    if prefix:
+        return [f"{prefix} {kw}" for kw in keywords_found]
+    return list(keywords_found)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+
+
 def process_video_grey_masks(video_info: Dict, segmenter: SegmentationModel,
                               trajectory_data: List[Dict] = None):
     """Generate grey masks for a single video"""
@@ -532,7 +850,53 @@ def process_video_grey_masks(video_info: Dict, segmenter: SegmentationModel,
         if not noun:
             continue
 
+        # ---- Diagnostic: expose everything VLM gave for this object so the user
+        # can correlate "what VLM said" with "which code path ran". None of these
+        # fields change control flow in this file today — they are only logged.
+        category = (obj.get('category') or 'physical').strip().lower()
+        will_move = bool(obj.get('will_move', False))
+        should_have_stayed = bool(obj.get('should_have_stayed', False))
+        has_traj_path = isinstance(obj.get('trajectory_path'), list) and len(obj.get('trajectory_path') or []) > 0
+        has_grid_locs = isinstance(obj.get('grid_localizations'), list) and len(obj.get('grid_localizations') or []) > 0
+        first_appears_frame = int(obj.get('first_appears_frame', 0))
+
+        # Pick a human-readable "VLM expected path" label based on the canonical
+        # 4-case decision matrix:
+        #   - visual_artifact                → no SAM3; grid_localizations only
+        #   - should_have_stayed=true        → freeze SAM3 @ first_appears_frame
+        #                                       (fallback: stationary grid box)
+        #   - will_move=true + trajectory    → grid-cell box along trajectory
+        #   - otherwise                      → per-frame SAM3
+        if category == 'visual_artifact':
+            # Policy: only 'reflection' / 'shadow' nouns are processed (split
+            # + per-frame SAM3). Anything else is skipped; no grid fallback.
+            _vas = split_visual_artifact_noun(noun)
+            if _vas:
+                vlm_expected_path = (
+                    f"visual_artifact (split → per-frame SAM3 on {_vas})"
+                )
+            else:
+                vlm_expected_path = "visual_artifact (no reflection/shadow keyword — skipped)"
+        elif should_have_stayed:
+            vlm_expected_path = "should_have_stayed=true (freeze SAM3 @ first_appears_frame)"
+        elif will_move and has_traj_path:
+            vlm_expected_path = "will_move=true + trajectory_path (grid-cell box along trajectory)"
+        elif will_move:
+            vlm_expected_path = "will_move=true, no trajectory (per-frame SAM3)"
+        else:
+            vlm_expected_path = "physical, static (per-frame SAM3)"
+
         print(f"      • {noun}")
+        print(f"         VLM fields:")
+        print(f"           category             = {category}")
+        print(f"           will_move            = {will_move}")
+        print(f"           should_have_stayed   = {should_have_stayed}")
+        print(f"           first_appears_frame  = {first_appears_frame}")
+        print(f"           trajectory_path      = {'yes (' + str(len(obj.get('trajectory_path') or [])) + ' keyframes)' if has_traj_path else 'no'}")
+        print(f"           grid_localizations   = {'yes (' + str(len(obj.get('grid_localizations') or [])) + ' entries)' if has_grid_locs else 'no'}")
+        print(f"           original_position_grid = {obj.get('original_position_grid') or 'n/a'}")
+        print(f"           object_size_grids    = {obj.get('object_size_grids') or 'n/a'}")
+        print(f"         Expected path (by paper ontology): {vlm_expected_path}")
 
         # Check if we have USER TRAJECTORY for this object
         has_trajectory = False
@@ -542,7 +906,7 @@ def process_video_grey_masks(video_info: Dict, segmenter: SegmentationModel,
                     has_trajectory = True
                     traj_points = traj.get('trajectory_points', [])
 
-                    print(f"         Using user-drawn trajectory ({len(traj_points)} points)")
+                    print(f"         ▶ Actual path: USER-DRAWN TRAJECTORY ({len(traj_points)} points)")
 
                     # Segment object in first_appears_frame to get SIZE
                     first_frame_idx = obj.get('first_appears_frame', 0)
@@ -566,8 +930,18 @@ def process_video_grey_masks(video_info: Dict, segmenter: SegmentationModel,
                             )
 
                             # Accumulate
+                            per_frame_pixels = []
                             for i in range(total_frames):
                                 accumulated_masks[i] |= traj_masks[i]
+                                per_frame_pixels.append(int(traj_masks[i].sum()))
+
+                            if per_frame_pixels:
+                                n = len(per_frame_pixels)
+                                sample_idx = list(range(0, n, max(1, n // 10)))
+                                if sample_idx[-1] != n - 1:
+                                    sample_idx.append(n - 1)
+                                sample_str = ", ".join(f"f{i}={per_frame_pixels[i]}" for i in sample_idx)
+                                print(f"         Per-frame trajectory pixel counts (sampled): {sample_str}")
 
                             print(f"         ✓ Applied object along trajectory across {total_frames} frames")
                         else:
@@ -584,29 +958,152 @@ def process_video_grey_masks(video_info: Dict, segmenter: SegmentationModel,
 
                     break
 
-        # If NO user trajectory, segment through ALL frames
-        # This captures: static objects, objects that move during video, dynamic effects
+        # No user-drawn trajectory: dispatch to the paper's 4-case matrix.
         if not has_trajectory:
-            print(f"         Segmenting through ALL frames (captures any movement/changes)...")
-            obj_masks = segment_object_all_frames(str(input_video_path), noun, segmenter, frame_stride=5)
-            print(f"         Proximity filter disabled; using raw segmentation masks")
+            obj_size_grids_dict = obj.get('object_size_grids') or {}
+            size_grids_tuple = (
+                int(obj_size_grids_dict.get('rows', 2)) if isinstance(obj_size_grids_dict, dict) else 2,
+                int(obj_size_grids_dict.get('cols', 2)) if isinstance(obj_size_grids_dict, dict) else 2,
+            )
+
+            obj_masks: List[np.ndarray] = [
+                np.zeros((frame_height, frame_width), dtype=bool) for _ in range(total_frames)
+            ]
+
+            # ─── Case 1: visual_artifact ──────────────────────────────────
+            # Only SAM3-segmentable keywords ("reflection" / "shadow") are
+            # handled: we split the noun into sub-nouns and run per-frame
+            # SAM3 on each. No grid_localizations fallback — if the noun has
+            # no segmentable keyword, this object is skipped entirely.
+            if category == 'visual_artifact':
+                sub_nouns = split_visual_artifact_noun(noun)
+                if sub_nouns:
+                    print(f"         ▶ Actual path: visual_artifact split into "
+                          f"{sub_nouns} → per-frame SAM3 on each")
+                    for sub_noun in sub_nouns:
+                        sub_masks = segment_object_all_frames(
+                            str(input_video_path), sub_noun, segmenter, frame_stride=5
+                        )
+                        # Length-normalise to total_frames.
+                        if len(sub_masks) < total_frames:
+                            pad = np.zeros((frame_height, frame_width), dtype=bool) \
+                                if not sub_masks else sub_masks[-1]
+                            sub_masks = sub_masks + [pad.copy() for _ in range(total_frames - len(sub_masks))]
+                        elif len(sub_masks) > total_frames:
+                            sub_masks = sub_masks[:total_frames]
+
+                        sub_px = [int(m.sum()) for m in sub_masks]
+                        print(f"           ↳ '{sub_noun}': "
+                              f"total={sum(sub_px)}, min={min(sub_px)}, max={max(sub_px)}, "
+                              f"first={sub_px[0]}, last={sub_px[-1]}")
+                        for i in range(total_frames):
+                            obj_masks[i] |= sub_masks[i]
+                else:
+                    print(f"         ▶ Actual path: visual_artifact with no 'reflection'/'shadow' "
+                          f"keyword — skipping (Mcount empty)")
+
+            # ─── Case 2: should_have_stayed ─── freeze SAM3 @ first_appears_frame,
+            # fall back to stationary grid box if SAM3 misses or VLM gave no grid.
+            elif should_have_stayed:
+                print(f"         ▶ Actual path: FREEZE SAM3 @ frame {first_appears_frame} for '{noun}'")
+                frozen, snapshot_px = freeze_sam3_at_frame(
+                    str(input_video_path), first_appears_frame, noun, segmenter,
+                    total_frames, (frame_height, frame_width),
+                )
+                print(f"         SAM3 snapshot: {snapshot_px} px at frame {first_appears_frame}")
+                if snapshot_px > 0:
+                    obj_masks = frozen
+                elif obj.get('original_position_grid'):
+                    # SAM3 missed — fall back to VLM's grid box.
+                    orig_grid = obj.get('original_position_grid') or {}
+                    print(f"         SAM3 snapshot empty → falling back to stationary grid box at "
+                          f"row={orig_grid.get('row')}, col={orig_grid.get('col')}, "
+                          f"size={size_grids_tuple[0]}×{size_grids_tuple[1]} cells")
+                    obj_masks = paint_stationary_grid_box_per_frame(
+                        center_grid=(int(orig_grid.get('row', 0)), int(orig_grid.get('col', 0))),
+                        object_size_grids=size_grids_tuple,
+                        total_frames=total_frames,
+                        frame_shape=(frame_height, frame_width),
+                        grid_rows=grid_rows, grid_cols=grid_cols,
+                        first_appears_frame=first_appears_frame,
+                    )
+                else:
+                    print(f"         ⚠  SAM3 snapshot empty and no original_position_grid — Mcount empty")
+
+            # ─── Case 3: will_move=true + trajectory_path ─── SAM3 not needed;
+            # place a grid-cell box along the trajectory.
+            elif will_move and has_traj_path:
+                print(f"         ▶ Actual path: VLM trajectory_path "
+                      f"({len(obj.get('trajectory_path') or [])} keyframes, "
+                      f"size={size_grids_tuple[0]}×{size_grids_tuple[1]} cells)")
+                obj_masks = paint_vlm_trajectory_box_per_frame(
+                    obj.get('trajectory_path') or [],
+                    size_grids_tuple,
+                    total_frames,
+                    (frame_height, frame_width),
+                    grid_rows, grid_cols,
+                    first_appears_frame=first_appears_frame,
+                )
+
+            # ─── Case 4 (default): per-frame SAM3 ─────────────────────────
+            else:
+                print(f"         ▶ Actual path: PER-FRAME SAM3 on '{noun}' (stride=5, all frames)")
+                obj_masks = segment_object_all_frames(
+                    str(input_video_path), noun, segmenter, frame_stride=5
+                )
+                # Normalise length: segment_object_all_frames returns 1 mask / decoded frame.
+                if len(obj_masks) < total_frames:
+                    pad = np.zeros((frame_height, frame_width), dtype=bool) \
+                        if not obj_masks else obj_masks[-1]
+                    obj_masks = obj_masks + [pad.copy() for _ in range(total_frames - len(obj_masks))]
+                elif len(obj_masks) > total_frames:
+                    obj_masks = obj_masks[:total_frames]
 
             # Accumulate
-            for i in range(len(obj_masks)):
-                if i < len(accumulated_masks):
-                    accumulated_masks[i] |= obj_masks[i]
+            per_frame_pixels = []
+            for i in range(total_frames):
+                accumulated_masks[i] |= obj_masks[i]
+                per_frame_pixels.append(int(obj_masks[i].sum()))
 
-            pixel_count = sum(mask.sum() for mask in obj_masks)
-            print(f"         ✓ Segmented across {len(obj_masks)} frames ({pixel_count} total raw pixels)")
+            pixel_count = sum(per_frame_pixels)
+            if per_frame_pixels:
+                n = len(per_frame_pixels)
+                sample_idx = list(range(0, n, max(1, n // 10)))
+                if sample_idx[-1] != n - 1:
+                    sample_idx.append(n - 1)
+                sample_str = ", ".join(f"f{i}={per_frame_pixels[i]}" for i in sample_idx)
+                print(f"         Per-frame pixel counts (sampled): {sample_str}")
+                print(f"         Per-frame pixels: min={min(per_frame_pixels)}, "
+                      f"max={max(per_frame_pixels)}, "
+                      f"first={per_frame_pixels[0]}, last={per_frame_pixels[-1]}")
 
-    # Cumulative union: once a region becomes grey, keep it for all later frames.
-    print(f"   Applying cumulative union across frames...")
-    for frame_idx in range(1, len(accumulated_masks)):
-        accumulated_masks[frame_idx] |= accumulated_masks[frame_idx - 1]
+            print(f"         ✓ Added across {total_frames} frames ({pixel_count} total raw pixels)")
+
+    # No temporal accumulation: Ma(f) is a pure per-frame union of each
+    # object's contribution at that frame, matching the VOID paper's
+    # convert_trimask_to_quadmask ground-truth definition.
+    print(f"   Per-frame Ma ready (no cumulative union).")
+
+    # Per-frame pixel summary before gridify so we can see if Ma is shrinking.
+    pre_grid_pixels = [int(m.sum()) for m in accumulated_masks]
+    if pre_grid_pixels:
+        n = len(pre_grid_pixels)
+        sample_idx = list(range(0, n, max(1, n // 10)))
+        if sample_idx[-1] != n - 1:
+            sample_idx.append(n - 1)
+        sample_str = ", ".join(f"f{i}={pre_grid_pixels[i]}" for i in sample_idx)
+        print(f"   Ma pre-gridify pixel counts (sampled): {sample_str}")
+        print(f"   Ma pre-gridify pixels: min={min(pre_grid_pixels)}, max={max(pre_grid_pixels)}, "
+              f"first={pre_grid_pixels[0]}, last={pre_grid_pixels[-1]}")
 
     # GRIDIFY all accumulated masks
     print(f"   Gridifying masks...")
     gridified_masks = gridify_masks(accumulated_masks, grid_rows, grid_cols)
+
+    post_grid_pixels = [int(m.sum()) for m in gridified_masks]
+    if post_grid_pixels:
+        print(f"   Ma post-gridify pixels: min={min(post_grid_pixels)}, "
+              f"max={max(post_grid_pixels)}, first={post_grid_pixels[0]}, last={post_grid_pixels[-1]}")
 
     # Convert to uint8 (127 = grey, 255 = background)
     grey_masks_uint8 = [np.where(mask, 127, 255).astype(np.uint8) for mask in gridified_masks]
